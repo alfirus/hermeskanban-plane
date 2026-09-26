@@ -1,0 +1,35 @@
+{
+  "plane": {
+    "base_url": "https://plane.alfirus.my",
+    "workspace": "aerosgeotech",
+    "api_token_env_file": "~/.hermes-secrets/plane-sync.env",
+    "api_token_var": "PLANE_API_TOKEN"
+  },
+  "kanban": {
+    "cli": "hermes",
+    "board": "default",
+    "created_by": "planesync"
+  },
+  "data_dir": "~/.hermes/planesync",
+  "default_assignee": null,
+  "assignee_map": {
+    "maisarah": "maisarah",
+    "rina": "rina",
+    "mirza": "mirza"
+  },
+  "priority_map": {
+    "urgent": 90,
+    "high": 70,
+    "medium": 50,
+    "low": 30,
+    "none": 10
+  },
+  "skip_state_groups": ["completed", "cancelled"],
+  "projects": {
+    "hermeskanban-plane": { "enabled": true, "board": "default" },
+    "pilotv4": { "enabled": true, "board": "default" },
+    "ags": { "enabled": true, "board": "default" },
+    "aerosgeotech": { "enabled": true, "board": "default" },
+    "theglobe": { "enabled": true, "board": "default" }
+  }
+}
