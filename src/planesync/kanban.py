@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import subprocess
+import tempfile
 
 
 class KanbanError(RuntimeError):
@@ -39,29 +40,40 @@ class KanbanClient:
         if self.board:
             cmd += ["--board", self.board]
         cmd += args
-        try:
-            proc = subprocess.Popen(
-                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                errors="replace",
-            )
-        except FileNotFoundError as e:
-            raise KanbanError(f"kanban CLI not found: {self.cli}") from e
-        try:
-            out, err = proc.communicate(input=stdin_text, timeout=self.timeout)
-        except subprocess.TimeoutExpired:
-            # Kill the WHOLE tree: the CLI wrapper spawns children that inherit
-            # the pipes, and a plain kill of the wrapper leaves communicate()
-            # blocked on pipe EOF forever (observed live during a Hermes
-            # self-update window, 2026-09-26).
-            self._kill_tree(proc.pid)
+        # Redirect stdout/stderr to temp files instead of pipes. The CLI spawns
+        # helper children that inherit its handles; with pipes we would wait for
+        # pipe EOF long after the CLI itself exited (observed live during a
+        # Hermes self-update window, 2026-09-26), blowing past the timeout and
+        # wedging the pass. A lingering grandchild holding a FILE handle never
+        # blocks us: we wait for the direct child only, then read the files.
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8",
+                                    errors="replace") as out_f, \
+                tempfile.TemporaryFile(mode="w+", encoding="utf-8",
+                                       errors="replace") as err_f, \
+                tempfile.TemporaryFile(mode="w+", encoding="utf-8",
+                                       errors="replace") as in_f:
+            if stdin_text:
+                in_f.write(stdin_text)
+                in_f.flush()
+            in_f.seek(0)
             try:
-                proc.communicate(timeout=15)
-            except Exception:  # noqa: BLE001
-                pass
-            raise KanbanError(
-                f"kanban CLI timed out ({self.timeout}s): {' '.join(args[:2])}"
-            ) from None
+                proc = subprocess.Popen(cmd, stdin=in_f, stdout=out_f, stderr=err_f)
+            except FileNotFoundError as e:
+                raise KanbanError(f"kanban CLI not found: {self.cli}") from e
+            try:
+                proc.wait(timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                # Kill the WHOLE tree: the wrapper alone can be gone while its
+                # children keep the launch blocked, and we must fail fast so the
+                # next scheduled tick retries.
+                self._kill_tree(proc.pid)
+                raise KanbanError(
+                    f"kanban CLI timed out ({self.timeout}s): {' '.join(args[:2])}"
+                ) from None
+            out_f.seek(0)
+            out = out_f.read()
+            err_f.seek(0)
+            err = err_f.read()
         if proc.returncode != 0:
             raise KanbanError(
                 f"hermes {' '.join(args[:2])} failed ({proc.returncode}): "
