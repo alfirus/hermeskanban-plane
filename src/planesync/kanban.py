@@ -6,6 +6,8 @@ this sync from depending on the board's internal schema.
 """
 
 import json
+import os
+import signal
 import subprocess
 
 
@@ -38,20 +40,45 @@ class KanbanClient:
             cmd += ["--board", self.board]
         cmd += args
         try:
-            proc = subprocess.run(
-                cmd, input=stdin_text, capture_output=True, text=True,
-                timeout=self.timeout, encoding="utf-8", errors="replace",
+            proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                errors="replace",
             )
         except FileNotFoundError as e:
             raise KanbanError(f"kanban CLI not found: {self.cli}") from e
-        except subprocess.TimeoutExpired as e:
-            raise KanbanError(f"kanban CLI timed out: {' '.join(args[:2])}") from e
+        try:
+            out, err = proc.communicate(input=stdin_text, timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            # Kill the WHOLE tree: the CLI wrapper spawns children that inherit
+            # the pipes, and a plain kill of the wrapper leaves communicate()
+            # blocked on pipe EOF forever (observed live during a Hermes
+            # self-update window, 2026-09-26).
+            self._kill_tree(proc.pid)
+            try:
+                proc.communicate(timeout=15)
+            except Exception:  # noqa: BLE001
+                pass
+            raise KanbanError(
+                f"kanban CLI timed out ({self.timeout}s): {' '.join(args[:2])}"
+            ) from None
         if proc.returncode != 0:
             raise KanbanError(
                 f"hermes {' '.join(args[:2])} failed ({proc.returncode}): "
-                f"{(proc.stderr or proc.stdout)[:400]}"
+                f"{(err or out)[:400]}"
             )
-        return proc.stdout
+        return out
+
+    @staticmethod
+    def _kill_tree(pid: int):
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                               capture_output=True, timeout=30)
+            else:
+                os.kill(pid, signal.SIGKILL)
+        except Exception:  # noqa: BLE001 - best effort; the next pass retries
+            pass
 
     def create_task(self, title: str, body: str, assignee: str | None = None,
                     priority: int | None = None, idempotency_key: str | None = None) -> dict:
