@@ -29,22 +29,33 @@ def html_to_text(markup: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def item_state_group(item: dict) -> str:
-    state = item.get("state") or {}
-    if isinstance(state, dict):
-        return state.get("group") or ""
-    return ""
+def state_info(item: dict, state_map: dict | None = None) -> dict:
+    """Normalize item['state'] — the API returns a plain state id (string) on
+    work-items, while richer payloads embed a state object."""
+    st = item.get("state")
+    if isinstance(st, dict):
+        return st
+    if isinstance(st, str):
+        if state_map and st in state_map:
+            return state_map[st]
+        return {"id": st, "name": "?", "group": None}  # group None = unknown
+    return {"id": None, "name": "?", "group": None}
+
+
+def item_state_group(item: dict, state_map: dict | None = None) -> str | None:
+    return state_info(item, state_map).get("group")
 
 
 def build_task_body(item: dict, project_name: str, base_url: str, workspace: str,
-                    project_id: str) -> str:
+                    project_id: str, state_map: dict | None = None) -> str:
     url = f"{base_url}/{workspace}/projects/{project_id}/work-items/{item['id']}"
     desc = html_to_text(item.get("description_html") or item.get("description") or "")
+    state_name = state_info(item, state_map).get("name", "?")
     header = (
         f"Synced from Plane (source of truth for scope/status).\n\n"
         f"- Plane project: {project_name} (workspace {workspace})\n"
         f"- Work item: {item.get('name')} (#{item.get('sequence_id', '?')})\n"
-        f"- State: {(item.get('state') or {}).get('name', '?')}\n"
+        f"- State: {state_name}\n"
         f"- URL: {url}\n"
     )
     return header + ("\n---\n\n" + desc if desc else "")
@@ -81,16 +92,21 @@ def run_sync(cfg, plane, kanban, store, dry_run: bool = False) -> dict:
     (they are logged and counted) — only fatal setup errors propagate."""
     summary = {
         "created": 0, "skipped_existing": 0, "skipped_terminal": 0,
-        "skipped_unmapped": 0, "reflected_done": 0, "reflected_blocked": 0,
+        "skipped_unknown_state": 0, "skipped_unmapped": 0,
+        "reflected_done": 0, "reflected_blocked": 0,
         "errors": 0, "projects": [],
     }
     skip_groups = set(cfg.get("skip_state_groups") or [])
     completed_state_cache: dict = {}
 
-    # Resolve mapped Plane projects by name once per pass.
+    # Resolve mapped Plane projects (config keys may be name, slug or id) once per pass.
     projects = []
     try:
-        known = {p.get("name"): p for p in plane.list_projects()}
+        known = {}
+        for p in plane.list_projects():
+            for k in (p.get("name"), p.get("slug"), p.get("id")):
+                if k:
+                    known[k] = p
     except PlaneError as e:
         log.error("cannot list Plane projects: %s", e)
         summary["errors"] += 1
@@ -124,12 +140,23 @@ def run_sync(cfg, plane, kanban, store, dry_run: bool = False) -> dict:
             kcli = KanbanClient(cli=kanban.cli, board=proj_kanban_board,
                                 created_by=kanban.created_by)
 
+        # state id -> {name, group}; work-items return state as a bare id
+        try:
+            state_map = {s["id"]: s for s in plane.list_states(pid)}
+        except Exception as e:  # noqa: BLE001 - conservative: unknown state = no create
+            log.warning("cannot list states for %s: %s", name, e)
+            state_map = {}
+
         for item in items:
             issue_id = item["id"]
             if store.get(issue_id):
                 summary["skipped_existing"] += 1
                 continue
-            group = item_state_group(item)
+            group = item_state_group(item, state_map)
+            if group is None:
+                log.warning("state group unknown for %s; deferring creation", issue_id)
+                summary["skipped_unknown_state"] += 1
+                continue
             if group in skip_groups:
                 summary["skipped_terminal"] += 1
                 continue
@@ -138,7 +165,7 @@ def run_sync(cfg, plane, kanban, store, dry_run: bool = False) -> dict:
                 summary["created"] += 1
                 continue
             body = build_task_body(item, name, cfg["plane"]["base_url"],
-                                   cfg["plane"]["workspace"], pid)
+                                   cfg["plane"]["workspace"], pid, state_map)
             try:
                 task = kcli.create_task(
                     title=item.get("name") or "(untitled Plane item)",

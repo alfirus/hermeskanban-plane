@@ -51,6 +51,15 @@ class FakePlane:
     def list_work_items(self, project_id):
         return list(self.items)
 
+    def list_states(self, project_id):
+        return [
+            {"id": "s-backlog", "name": "Backlog", "group": "backlog"},
+            {"id": "s-unstarted", "name": "Todo", "group": "unstarted"},
+            {"id": "s-started", "name": "In Progress", "group": "started"},
+            {"id": "s-completed", "name": "Done", "group": "completed"},
+            {"id": "s-cancelled", "name": "Cancelled", "group": "cancelled"},
+        ]
+
     def completed_state_id(self, project_id, cache):
         return "s-completed"
 
@@ -114,6 +123,20 @@ class SyncFlowTest(unittest.TestCase):
         self.assertEqual(s2["created"], 0)
         self.assertEqual(s2["skipped_existing"], 2)
         self.assertEqual(len(self.kanban.created), 2)
+
+    def test_string_state_resolved_via_state_map(self):
+        # live API returns state as a bare id, not an object
+        self.plane.items = [{"id": "i9", "name": "Finished elsewhere", "sequence_id": 9,
+                             "priority": "low", "state": "s-completed",
+                             "assignees": [], "description_html": ""}]
+        s = self.run_pass()
+        self.assertEqual(s["skipped_terminal"], 1)
+        self.assertEqual(s["created"], 0)
+        self.plane.items = [{"id": "i8", "name": "Open item", "sequence_id": 8,
+                             "priority": "low", "state": "s-unstarted",
+                             "assignees": [], "description_html": ""}]
+        s = self.run_pass()
+        self.assertEqual(s["created"], 1)
 
     def test_assignee_and_priority_mapping(self):
         self.run_pass()

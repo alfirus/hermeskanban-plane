@@ -79,7 +79,8 @@ class PlaneClient:
         return self._paged(f"/projects/{project_id}/states/")
 
     def list_work_items(self, project_id: str, per_page: int = 100):
-        return self._paged(f"/projects/{project_id}/work-items/", params={"per_page": per_page})
+        return self._paged(f"/projects/{project_id}/work-items/",
+                           params={"per_page": per_page, "expand": "assignees"})
 
     def get_work_item(self, project_id: str, item_id: str):
         status, body = self._request("GET", f"/projects/{project_id}/work-items/{item_id}/")
