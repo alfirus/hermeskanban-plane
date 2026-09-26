@@ -87,8 +87,17 @@ scripts\uninstall_scheduled_task.cmd   :: removes it
 Why a scheduled one-shot instead of a daemon: each pass is independent, so the
 next tick *is* the self-heal — there is no long-lived process to supervise
 (see ADR 0001 and the 9119 outage post-mortem for why that matters on this
-host). A lock file prevents overlapping passes. Logs (size-capped):
+host). A lock file prevents overlapping passes (a second start skips with rc 0
+and logs `another sync holds the lock`; a lock older than 30 min is stale —
+crashed run — and is stolen). Logs (size-capped):
 `~/.hermes/planesync/logs/planesync.log`.
+
+**When ticks log `kanban show failed … timed out (120s)`:** a concurrent Hermes
+launch is blocking — typically a platform self-update holding
+`~/.hermes-update-in-progress`. The pass fails fast (whole CLI process tree is
+killed), exits non-zero, and the next tick retries; while this lasts nothing is
+created twice or reflected twice. See docs/e2e-proof.md §6 for the live
+incident and fixes.
 
 ## Tests
 

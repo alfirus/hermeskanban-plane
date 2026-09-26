@@ -195,5 +195,32 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(got, "fallback-profile")
 
 
+class LockTest(unittest.TestCase):
+    def test_fresh_lock_blocks_second_holder(self):
+        import os
+        from planesync.__main__ import Lock, LockHeld
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "sync.lock"
+            with Lock(p):
+                self.assertTrue(p.exists())
+                with self.assertRaises(LockHeld):
+                    with Lock(p):        # body must NOT run while held
+                        self.fail("body ran while another instance held the lock")
+            self.assertFalse(p.exists())  # released on exit
+
+    def test_stale_lock_is_stolen(self):
+        import os
+        import time
+        from planesync.__main__ import Lock
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "sync.lock"
+            p.write_text("999999")
+            old = time.time() - 3600
+            os.utime(p, (old, old))
+            with Lock(p):
+                self.assertTrue(p.exists())
+            self.assertFalse(p.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

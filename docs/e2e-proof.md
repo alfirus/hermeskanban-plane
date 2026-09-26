@@ -100,16 +100,86 @@ Exactly one comment — the transition was reflected once, not on every poll.
 
 ```
 python -m unittest discover -s tests
-Ran 8 tests in 0.155s — OK
+Ran 10 tests in 0.550s — OK
 ```
 
 Covers idempotent creation, done/blocked reflection exactly once,
-assignee/priority mapping, bare-state-id resolution, HTML→text conversion.
+assignee/priority mapping, bare-state-id resolution, HTML→text conversion,
+and lock semantics (fresh lock blocks a second holder; stale lock is stolen).
+
+## 5. Unattended round trip (Windows scheduled task)
+
+Second demo issue, created in Plane first:
+
+```
+POST …/work-items/ -> 201   id 9190f5bf-c97b-4b27-a795-1ea7bd5cae89
+  [sync-demo] scheduled-tick test   (#2, priority medium)
+```
+
+The scheduled task `HermesPlaneSync` (every 5 min, runs
+`scripts\run_sync.cmd` from the durable clone `C:\Users\alfir\hermeskanban-plane`)
+picked it up on its own tick — no shell involved:
+
+```
+2026-09-26 18:11:16  planesync: created kanban task t_25530120 for Plane item
+                     9190f5bf… ([sync-demo] scheduled-tick test)
+link store: issue=9190f5bf  task=t_25530120  kanban=ready  reflected=-
+```
+
+Task completed manually (`hermes kanban complete t_25530120 …`), then a later
+pass reflected it:
+
+```
+2026-09-26 18:49:59  planesync: reflected done to Plane item 9190f5bf… (task t_25530120)
+summary: {"created": 0, "skipped_existing": 2, "reflected_done": 1, "errors": 0}
+```
+
+Plane read-back (API):
+
+```
+GET …/work-items/9190f5bf…/ -> 200
+  state_name: "Done",  state_group: "completed",  updated_at: 2026-09-26T10:50:00Z
+GET …/comments/ -> 200   count: 1
+  [hermes-sync] Kanban task t_25530120 went done. Agent summary: Scheduled-tick
+  demo: created by the HermesPlaneSync Windows task (unattended), completing so
+  the next tick proves unattended reflection. …
+```
+
+Final link store — both demo items round-tripped both ways:
+
+```
+hermeskanban plane  issue=b39e68b8  task=t_432900bc  kanban=done  reflected=done
+hermeskanban plane  issue=9190f5bf  task=t_25530120  kanban=done  reflected=done
+```
+
+## 6. Live incident during verification (Hermes self-update window)
+
+A Hermes self-update ran concurrently with verification (18:17–18:50) and made
+`hermes kanban` launches intermittently block. Three defects surfaced and were
+fixed (commits `e280cea`, `c04f460`, and the lock fix in this commit):
+
+1. **Pipe-EOF wedge (critical).** `subprocess.run(timeout=…)` killed only the
+   CLI wrapper on timeout while its children kept stdout/stderr pipes open, so
+   `communicate()` waited forever — a pass wedged >10 min with no log progress
+   (PID 6088, 18:13 tick). Fixed by killing the whole process tree.
+2. **Temp files instead of pipes.** Even bounded, every tick's `show` blew past
+   120s because the wait was on pipe EOF, not on the CLI itself. Redirecting
+   stdout/stderr to temp files and waiting on the direct child took scheduled
+   `show` from 120s-timeout to 3.3s (probe under the same scheduled context).
+3. **Lock did not gate the body.** `Lock.__enter__` logged "skipping" but
+   returned normally, so a second pass ran concurrently anyway. It now raises
+   `LockHeld`, and `one_pass()` skips cleanly (rc 0), with stale-lock steal
+   (>30 min) preserved.
+
+Residual behavior while the platform updater is stuck: a tick's CLI launch may
+still burn its 120s timeout, the pass logs the error, exits non-zero, and the
+next tick retries — self-healing by design (ADR §failure handling); no data is
+duplicated or double-reflected in the meantime (exactly-once tests above).
 
 ## Environment note
 
 The `hermes kanban` CLI blocks mutations when `HERMES_DELEGATED_CHILD_CONTEXT`
 is set (agent child sessions). The verification passes above ran with the
 `HERMES_*` variables unset — the same environment the Windows scheduled task
-provides. A probe task created during this check was archived immediately
-(`t_c14f10b8`).
+provides (probe: `HERMES_HOME`, `HERMES_GIT_BASH_PATH` only). A probe task
+created during this check was archived immediately (`t_c14f10b8`).

@@ -34,8 +34,16 @@ def setup_logging(data_dir: Path, verbose: bool):
     root.addHandler(sh)
 
 
+class LockHeld(RuntimeError):
+    """Another planesync instance currently holds the sync lock."""
+
+
 class Lock:
-    """Prevent overlapping runs (scheduled ticks can stack behind a hung run)."""
+    """Prevent overlapping runs (scheduled ticks can stack behind a hung run).
+
+    Raises LockHeld when another instance holds a fresh lock, so callers skip
+    the pass entirely — a log line alone would still let the body run.
+    """
 
     def __init__(self, path: Path, stale_after: int = 1800):
         self.path = path
@@ -49,8 +57,7 @@ class Lock:
             except OSError:
                 age = 0
             if age < self.stale_after:
-                log.info("another sync holds the lock (%.0fs old); skipping this tick", age)
-                return self
+                raise LockHeld(f"another sync holds the lock ({age:.0f}s old)")
             log.warning("stale lock (%.0fs old) stealing", age)
             try:
                 self.path.unlink()
@@ -61,8 +68,8 @@ class Lock:
             os.write(fd, str(os.getpid()).encode())
             os.close(fd)
             self.acquired = True
-        except FileExistsError:
-            log.info("lock race; another run started first")
+        except FileExistsError as e:
+            raise LockHeld("lock race; another run started first") from e
         return self
 
     def __exit__(self, *exc):
@@ -116,12 +123,16 @@ def main(argv=None) -> int:
                           created_by=cfg["kanban"]["created_by"])
 
     def one_pass() -> int:
-        with Lock(ddir / "sync.lock"):
-            try:
-                summary = run_sync(cfg, plane, kanban, store, dry_run=args.dry_run)
-            except Exception:
-                log.exception("sync pass crashed")
-                return 1
+        try:
+            with Lock(ddir / "sync.lock"):
+                try:
+                    summary = run_sync(cfg, plane, kanban, store, dry_run=args.dry_run)
+                except Exception:
+                    log.exception("sync pass crashed")
+                    return 1
+        except LockHeld as e:
+            log.info("%s; skipping this tick", e)
+            return 0
         print(json.dumps({"summary": summary}))
         return 0 if summary.get("errors", 0) == 0 else 1
 
