@@ -15,7 +15,8 @@
   "assignee_map": {
     "maisarah": "maisarah",
     "rina": "rina",
-    "mirza": "mirza"
+    "mirza": "mirza",
+    "naura": "naura"
   },
   "priority_map": {
     "urgent": 90,
@@ -30,6 +31,11 @@
     "pilotv4": { "enabled": true, "board": "default" },
     "ags": { "enabled": true, "board": "default" },
     "aerosgeotech": { "enabled": true, "board": "default" },
-    "theglobe": { "enabled": true, "board": "default" }
+    "theglobe": { "enabled": true, "board": "default" },
+    "alfirus my": { "enabled": true, "board": "default" },
+    "Company AI": { "enabled": true, "board": "default" },
+    "DISC Personality Test": { "enabled": true, "board": "default" },
+    "Vectorizer": { "enabled": true, "board": "default" },
+    "Vectorizer Dashboard": { "enabled": true, "board": "default" }
   }
 }

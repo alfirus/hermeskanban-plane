@@ -99,6 +99,20 @@ killed), exits non-zero, and the next tick retries; while this lasts nothing is
 created twice or reflected twice. See docs/e2e-proof.md §6 for the live
 incident and fixes.
 
+## Card identity (staff-suggestions v1.6, Appendix A)
+
+Cards created by the sync conform to the org card template's project-identification
+contract (spec: `alfirus/ai` repo, `docs/kanban-card-template.md`):
+
+- Title prefix `[IDENT]` — the mapped Plane project's identifier, e.g. `[GLOBE] Fix TTS`.
+- First body line `Project: <Plane project name> (<IDENT>)`.
+
+`config/mapping.json` is the project registry of record for the sync. Current policy
+(27 Sep 2026): the two owner goal trackers **RM10k Saving (RM10K)** and **RM1k Passive
+Income (RM1KP)**, and the Plane demo project **AerosGeotech HQ**, are deliberately NOT
+mapped — goal trackers are read directly in Plane by the biweekly ops review, and
+importing their milestone items would flood the board.
+
 ## Tests
 
 ```bash

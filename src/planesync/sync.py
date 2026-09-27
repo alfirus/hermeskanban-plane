@@ -47,11 +47,16 @@ def item_state_group(item: dict, state_map: dict | None = None) -> str | None:
 
 
 def build_task_body(item: dict, project_name: str, base_url: str, workspace: str,
-                    project_id: str, state_map: dict | None = None) -> str:
+                    project_id: str, state_map: dict | None = None,
+                    identifier: str | None = None) -> str:
     url = f"{base_url}/{workspace}/projects/{project_id}/work-items/{item['id']}"
     desc = html_to_text(item.get("description_html") or item.get("description") or "")
     state_name = state_info(item, state_map).get("name", "?")
+    ident = (identifier or "").strip()
+    project_line = (f"Project: {project_name} ({ident})" if ident
+                    else f"Project: {project_name}")
     header = (
+        f"{project_line}\n\n"
         f"Synced from Plane (source of truth for scope/status).\n\n"
         f"- Plane project: {project_name} (workspace {workspace})\n"
         f"- Work item: {item.get('name')} (#{item.get('sequence_id', '?')})\n"
@@ -164,11 +169,15 @@ def run_sync(cfg, plane, kanban, store, dry_run: bool = False) -> dict:
                 log.info("[dry-run] would create task for %s (%s)", item.get("name"), issue_id)
                 summary["created"] += 1
                 continue
+            ident = (proj.get("identifier") or "").strip()
             body = build_task_body(item, name, cfg["plane"]["base_url"],
-                                   cfg["plane"]["workspace"], pid, state_map)
+                                   cfg["plane"]["workspace"], pid, state_map,
+                                   identifier=ident)
+            raw_title = item.get("name") or "(untitled Plane item)"
+            title = f"[{ident}] {raw_title}" if ident else raw_title
             try:
                 task = kcli.create_task(
-                    title=item.get("name") or "(untitled Plane item)",
+                    title=title,
                     body=body,
                     assignee=assignee_for(item, {**cfg, **pcfg}),
                     priority=priority_for(item, cfg),

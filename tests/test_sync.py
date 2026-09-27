@@ -40,13 +40,17 @@ def item(iid, name, group="unstarted", assignees=(), priority="medium"):
 
 
 class FakePlane:
-    def __init__(self, items):
+    def __init__(self, items, identifier=None):
         self.items = items
+        self.identifier = identifier
         self.state_changes = []
         self.comments = []
 
     def list_projects(self):
-        return [{"name": "demo", "id": "p1"}]
+        p = {"name": "demo", "id": "p1"}
+        if self.identifier:
+            p["identifier"] = self.identifier
+        return [p]
 
     def list_work_items(self, project_id):
         return list(self.items)
@@ -137,6 +141,21 @@ class SyncFlowTest(unittest.TestCase):
                              "assignees": [], "description_html": ""}]
         s = self.run_pass()
         self.assertEqual(s["created"], 1)
+
+    def test_project_identity_injected(self):
+        # staff-suggestions v1.6 Appendix A: [IDENT] title prefix + Project: header
+        self.plane.identifier = "DEMO"
+        self.run_pass()
+        t = self.kanban.created[0]
+        self.assertEqual(t["title"], "[DEMO] Build widget")
+        self.assertTrue(t["body"].startswith("Project: demo (DEMO)\n"))
+        self.assertIn("Project: demo (DEMO)", t["body"].splitlines()[0])
+
+    def test_project_identity_falls_back_without_identifier(self):
+        self.run_pass()   # FakePlane without identifier
+        t = self.kanban.created[0]
+        self.assertEqual(t["title"], "Build widget")
+        self.assertTrue(t["body"].startswith("Project: demo\n"))
 
     def test_assignee_and_priority_mapping(self):
         self.run_pass()
