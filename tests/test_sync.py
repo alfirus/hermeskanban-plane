@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -15,6 +16,10 @@ from planesync.store import LinkStore          # noqa: E402
 from planesync.sync import (                   # noqa: E402
     assignee_for, html_to_text, run_sync,
 )
+from planesync.kanban import (                 # noqa: E402
+    KanbanClient, KanbanTimeout, resolve_cli_prefix,
+)
+from planesync import kanban as kanban_mod     # noqa: E402
 
 
 def make_config(tmp: str) -> dict:
@@ -98,7 +103,6 @@ class FakeKanban:
     def show(self, task_id):
         t = self.tasks[task_id]
         return {**t, "_runs": [{"summary": t.get("summary")}]}
-        return t
 
 
 class SyncFlowTest(unittest.TestCase):
@@ -239,6 +243,113 @@ class LockTest(unittest.TestCase):
             with Lock(p):
                 self.assertTrue(p.exists())
             self.assertFalse(p.exists())
+
+
+class CliResolutionTest(unittest.TestCase):
+    def test_explicit_list_and_executable_pass_through(self):
+        self.assertEqual(resolve_cli_prefix(["python", "-m", "x"])[0],
+                         ["python", "-m", "x"])
+        self.assertEqual(resolve_cli_prefix("hermes")[0], ["hermes"])
+
+    def test_auto_prefers_module_entry(self):
+        with mock.patch.object(kanban_mod.importlib.util, "find_spec",
+                               return_value=object()):
+            prefix, why = resolve_cli_prefix("auto")
+        self.assertEqual(prefix, [sys.executable, "-m", "hermes_cli.main"])
+        self.assertIn("importable", why)
+
+    def test_auto_falls_back_to_launcher(self):
+        with mock.patch.object(kanban_mod.importlib.util, "find_spec",
+                               return_value=None), \
+             mock.patch.object(kanban_mod, "_cli_venv_entry", return_value=None):
+            prefix, why = resolve_cli_prefix(None)
+        self.assertEqual(prefix, ["hermes"])
+        self.assertIn("launcher", why)
+
+    def test_auto_uses_managed_venv_entry_without_import(self):
+        with mock.patch.object(kanban_mod.importlib.util, "find_spec",
+                               return_value=None), \
+             mock.patch.object(kanban_mod, "_cli_venv_entry",
+                               return_value="C:/env/venv/Scripts/hermes.exe"):
+            prefix, why = resolve_cli_prefix(None)
+        self.assertEqual(prefix, ["C:/env/venv/Scripts/hermes.exe"])
+        self.assertIn("venv", why)
+
+
+class KanbanClientTest(unittest.TestCase):
+    def test_show_logs_ok_and_parses_json(self):
+        client = KanbanClient(
+            cli=[sys.executable, "-c", "import sys; sys.stdout.write('{}')"],
+            timeout=30)
+        with self.assertLogs("planesync", level="INFO") as cm:
+            task = client.show("t_demo")
+        self.assertTrue(any("kanban CLI ok" in m for m in cm.output))
+        self.assertEqual(task["_runs"], [])
+
+    def test_timeout_carries_partial_output(self):
+        script = ("import sys, time\n"
+                  "sys.stdout.write('partial-out-marker')\n"
+                  "sys.stderr.write('partial-err-marker')\n"
+                  "sys.stdout.flush()\n"
+                  "sys.stderr.flush()\n"
+                  "time.sleep(30)\n")
+        client = KanbanClient(cli=[sys.executable, "-c", script], timeout=2)
+        with self.assertRaises(KanbanTimeout) as cm:
+            client.show("t_slow")
+        msg = str(cm.exception)
+        self.assertIn("timed out (2s)", msg)
+        self.assertIn("show t_slow", msg)
+        self.assertIn("partial-out-marker", msg)
+        self.assertIn("partial-err-marker", msg)
+
+
+class WedgedCliTest(unittest.TestCase):
+    """A CLI timeout aborts the pass instead of burning one budget per item."""
+
+    def _run_with(self, kanban, plane_items):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = LinkStore(Path(tmp) / "links.db")
+            cfg = make_config(tmp)
+            plane = FakePlane(plane_items)
+            for n in range(3):
+                store.insert_link(f"i{n}", "p1", "demo", f"t_{n}",
+                                  kanban_status="todo")
+            try:
+                summary = run_sync(cfg, plane, kanban, store)
+            finally:
+                store.close()
+        return summary
+
+    def test_show_timeout_trips_breaker_after_first_call(self):
+        class WedgingKanban(FakeKanban):
+            def __init__(self):
+                super().__init__()
+                self.show_calls = 0
+
+            def show(self, task_id):
+                self.show_calls += 1
+                raise KanbanTimeout(f"kanban CLI timed out (120s): show {task_id}")
+
+        kanban = WedgingKanban()
+        summary = self._run_with(kanban, [])
+        self.assertTrue(summary["cli_wedged"])
+        self.assertEqual(summary["errors"], 1)
+        self.assertEqual(kanban.show_calls, 1)
+
+    def test_create_timeout_trips_breaker(self):
+        class WedgingCreateKanban(FakeKanban):
+            def __init__(self):
+                super().__init__()
+                self.create_calls = 0
+
+            def create_task(self, *args, **kwargs):
+                self.create_calls += 1
+                raise KanbanTimeout("kanban CLI timed out (120s): create x")
+
+        kanban = WedgingCreateKanban()
+        summary = self._run_with(kanban, [item("ia", "A"), item("ib", "B")])
+        self.assertTrue(summary["cli_wedged"])
+        self.assertEqual(kanban.create_calls, 1)
 
 
 if __name__ == "__main__":

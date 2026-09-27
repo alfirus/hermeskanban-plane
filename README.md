@@ -55,7 +55,14 @@ Plane (mapped projects)                     Hermes Kanban
    *name*, *slug* or *id*; each entry can override `board` and
    `default_assignee`. `assignee_map` translates Plane assignees
    (display name or e-mail local part) to hermes profile names.
-4. **Kanban CLI**: `hermes` must be on `PATH`.
+4. **Kanban CLI**: `config.kanban.cli` controls how `hermes kanban` is invoked.
+   `"auto"` (default) resolves, in order: `python -m hermes_cli.main` when
+   `hermes_cli` is importable in the running interpreter, else the managed
+   runtime venv's own `hermes` entry (from the install's `facts.json`), else
+   the `hermes` launcher of last resort. The first two run the CLI directly;
+   the `hermes` bin launcher first finishes interrupted source updates and can
+   block for minutes while that repair is broken (see docs/e2e-proof.md §7).
+   A plain string pins a single executable; a JSON list pins a full argv prefix.
 
 ## Run
 
@@ -92,12 +99,18 @@ and logs `another sync holds the lock`; a lock older than 30 min is stale —
 crashed run — and is stolen). Logs (size-capped):
 `~/.hermes/planesync/logs/planesync.log`.
 
-**When ticks log `kanban show failed … timed out (120s)`:** a concurrent Hermes
-launch is blocking — typically a platform self-update holding
-`~/.hermes-update-in-progress`. The pass fails fast (whole CLI process tree is
-killed), exits non-zero, and the next tick retries; while this lasts nothing is
-created twice or reflected twice. See docs/e2e-proof.md §6 for the live
-incident and fixes.
+**When ticks log `kanban show failed … timed out (120s)`:** the CLI launch is
+blocked — historically by a platform self-update/repair running in front of
+`hermes` launcher starts (docs/e2e-proof.md §6 and §7). The pass fails fast
+(the whole CLI process tree is killed) and the next tick retries; while this
+lasts nothing is created twice or reflected twice. The log is built for
+troubleshooting: every CLI call is logged with its duration
+(`kanban CLI ok in 2.14s: show t_…`), each pass logs a JSON summary
+(`pass done in 50.8s: {…}`), and a timeout line carries the CLI's partial
+stdout/stderr plus a `hint:` when a known platform state is found (e.g. a
+pending `source-completion-pending` marker). A timeout also trips a circuit
+breaker — the rest of that pass is skipped (`"cli_wedged": true` in the
+summary) so one wedged CLI cannot burn a 120s budget per linked item.
 
 ## Card identity (staff-suggestions v1.6, Appendix A)
 

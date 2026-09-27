@@ -6,7 +6,7 @@
     "api_token_var": "PLANE_API_TOKEN"
   },
   "kanban": {
-    "cli": "hermes",
+    "cli": "auto",
     "board": "default",
     "created_by": "planesync"
   },

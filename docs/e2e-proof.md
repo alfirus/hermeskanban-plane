@@ -176,6 +176,57 @@ still burn its 120s timeout, the pass logs the error, exits non-zero, and the
 next tick retries — self-healing by design (ADR §failure handling); no data is
 duplicated or double-reflected in the meantime (exactly-once tests above).
 
+## 7. Live incident 2026-09-27: interrupted source update wedged `hermes` launches
+
+Symptom: from ~12:15 to ~14:18 every scheduled `show` hit the 120s timeout
+(`kanban show failed for t_…: kanban CLI timed out (120s)`), three per pass, so
+each pass burned ~6.8 min and the following tick logged `another sync holds the
+lock`. Plain `hermes kanban show` from an interactive shell returned in ~2.4s
+throughout — the failure was specific to the scheduled task's process context.
+
+Root cause (caught live with a 3s-interval process snapshot during a tick):
+
+- `hermes kanban` was launched through the **`hermes` bin launcher**
+  (`<HERMES_HOME>/bin/hermes.exe`), whose bootstrap
+  (`hermes_cli/venv_sync.prepare_launch`) first finishes an **interrupted
+  source update** (marker `installs/<key>/source-completion-pending`, present
+  since 02:09 that night).
+- The completion runs `source_completion.py --finish-update`, which needs
+  `npm`; the PM worker died during provisioning
+  (`pm.package.InstallError: pm: worker exited without a result`), so the
+  completion failed and each launch paid 60–120s+ in retry/fallback before the
+  actual command ran. Whether a given call squeaked under 120s was a race.
+- The interactive shell never hit this because its `hermes` resolved to a
+  managed **venv entry** (`environments/<gen>/venv/Scripts/hermes.exe`), which
+  runs the CLI directly with no repair step. `python -m hermes_cli.main kanban
+  …` (the gateway/dispatcher entry) likewise returned in ~2.9s.
+
+Fixes (this repo):
+
+1. **CLI invocation bypasses the launcher.** `kanban.cli: "auto"` (default)
+   resolves in order: `python -m hermes_cli.main` when `hermes_cli` imports in
+   the running interpreter; else the managed venv entry chosen via the
+   install's `facts.json` (`packages.venv.environment`); else `hermes` as last
+   resort. The scheduled task's `python` is 3.13 (Task Scheduler PATH), which
+   cannot import `hermes_cli` — the venv-entry step is what saves it.
+2. **Logging built for troubleshooting.** Startup line carries pid/interpreter;
+   every CLI call logs its duration (`kanban CLI ok in 2.14s: show t_… (exit 0,
+   N B)`); every pass logs a JSON summary with wall time; timeouts carry the
+   partial stdout/stderr captured before the tree was killed plus a `hint:`
+   when a known platform marker (e.g. `source-completion-pending`) is found.
+3. **Circuit breaker.** The first CLI timeout aborts the rest of the pass
+   (`"cli_wedged": true`), cutting worst-case pass time from ~6.8 min to one
+   budget and keeping the next tick from piling up behind the lock.
+
+Measured after the fix (same scheduled context, 14:48 tick): `show` 9.4s /
+2.1s / 2.0s, pass 50.8s, zero errors — while the same hour's launcher-path
+calls were still paying ~70s each.
+
+Platform-side residue (outside this repo): the interrupted source update still
+needs `hermes update` to finish (the `npm` PM failure is the thing to watch if
+it recurs). planesync no longer touches that path, but any other automation
+that spawns bare `hermes` still pays the penalty until it is cleared.
+
 ## Environment note
 
 The `hermes kanban` CLI blocks mutations when `HERMES_DELEGATED_CHILD_CONTEXT`

@@ -10,6 +10,7 @@ import html
 import logging
 import re
 
+from .kanban import KanbanTimeout
 from .plane import PlaneError
 
 log = logging.getLogger("planesync")
@@ -99,10 +100,11 @@ def run_sync(cfg, plane, kanban, store, dry_run: bool = False) -> dict:
         "created": 0, "skipped_existing": 0, "skipped_terminal": 0,
         "skipped_unknown_state": 0, "skipped_unmapped": 0,
         "reflected_done": 0, "reflected_blocked": 0,
-        "errors": 0, "projects": [],
+        "errors": 0, "cli_wedged": False, "projects": [],
     }
     skip_groups = set(cfg.get("skip_state_groups") or [])
     completed_state_cache: dict = {}
+    wedged = False  # a CLI timeout means every later call would burn its budget too
 
     # Resolve mapped Plane projects (config keys may be name, slug or id) once per pass.
     projects = []
@@ -129,6 +131,8 @@ def run_sync(cfg, plane, kanban, store, dry_run: bool = False) -> dict:
 
     # ---------- Direction 1: Plane -> kanban (create only) ----------
     for name, proj, pcfg in projects:
+        if wedged:
+            break
         pid = proj["id"]
         proj_kanban_board = pcfg.get("board")  # None -> sync's default board
         try:
@@ -153,6 +157,8 @@ def run_sync(cfg, plane, kanban, store, dry_run: bool = False) -> dict:
             state_map = {}
 
         for item in items:
+            if wedged:
+                break
             issue_id = item["id"]
             if store.get(issue_id):
                 summary["skipped_existing"] += 1
@@ -183,6 +189,11 @@ def run_sync(cfg, plane, kanban, store, dry_run: bool = False) -> dict:
                     priority=priority_for(item, cfg),
                     idempotency_key=f"plane:{issue_id}",
                 )
+            except KanbanTimeout as e:
+                log.error("create task failed for %s: %s", issue_id, e)
+                summary["errors"] += 1
+                wedged = True
+                break
             except Exception as e:  # noqa: BLE001 - count and continue
                 log.error("create task failed for %s: %s", issue_id, e)
                 summary["errors"] += 1
@@ -195,11 +206,18 @@ def run_sync(cfg, plane, kanban, store, dry_run: bool = False) -> dict:
 
     # ---------- Direction 2: kanban -> Plane (reflect only) ----------
     for link in store.all():
+        if wedged:
+            break
         task_id = link.get("kanban_task_id")
         if not task_id:
             continue
         try:
             task = kanban.show(task_id)
+        except KanbanTimeout as e:  # noqa: BLE001
+            log.error("kanban show failed for %s: %s", task_id, e)
+            summary["errors"] += 1
+            wedged = True
+            break
         except Exception as e:  # noqa: BLE001
             log.error("kanban show failed for %s: %s", task_id, e)
             summary["errors"] += 1
@@ -242,6 +260,11 @@ def run_sync(cfg, plane, kanban, store, dry_run: bool = False) -> dict:
         store.mark_reflected(link["plane_issue_id"], status)
         summary[summary_key] += 1
         log.info("reflected %s to Plane item %s (task %s)", status, link["plane_issue_id"], task_id)
+
+    if wedged:
+        summary["cli_wedged"] = True
+        log.warning("kanban CLI timed out — skipping the rest of this pass "
+                    "(the next tick retries; see the timeout line above for the cause)")
 
     return summary
 

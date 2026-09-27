@@ -105,7 +105,8 @@ def main(argv=None) -> int:
     cfg = cfgmod.load_config(args.config)
     ddir = cfgmod.data_dir(cfg)
     setup_logging(ddir, args.verbose)
-    log.info("planesync starting (config=%s dry_run=%s)", cfg["_config_path"], args.dry_run)
+    log.info("planesync starting (config=%s dry_run=%s pid=%d python=%s)",
+             cfg["_config_path"], args.dry_run, os.getpid(), sys.version.split()[0])
 
     store = LinkStore(ddir / "links.db")
     if args.status:
@@ -119,10 +120,11 @@ def main(argv=None) -> int:
         return 2
 
     plane = PlaneClient(cfg["plane"]["base_url"], cfg["plane"]["workspace"], token)
-    kanban = KanbanClient(cli=cfg["kanban"]["cli"], board=cfg["kanban"]["board"],
+    kanban = KanbanClient(cli=cfg["kanban"].get("cli"), board=cfg["kanban"]["board"],
                           created_by=cfg["kanban"]["created_by"])
 
     def one_pass() -> int:
+        t0 = time.monotonic()
         try:
             with Lock(ddir / "sync.lock"):
                 try:
@@ -133,6 +135,7 @@ def main(argv=None) -> int:
         except LockHeld as e:
             log.info("%s; skipping this tick", e)
             return 0
+        log.info("pass done in %.1fs: %s", time.monotonic() - t0, json.dumps(summary))
         print(json.dumps({"summary": summary}))
         return 0 if summary.get("errors", 0) == 0 else 1
 
